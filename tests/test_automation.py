@@ -100,9 +100,13 @@ def test_should_update_small_diff():
 
 
 def test_should_update_target_below_5w():
-    """Szenario 10: output_now=0, target=4 W → kein switching_on (target<5), diff=4 <5 → False."""
+    """Szenario 10: output_now=0, target=4 W → switching_on_discharge=False (target<5),
+    dann diff=4 <5 → should_update=False.
+    """
     output_now = 0
-    target_output = 4  # target < 5 → switching_on_discharge ist False
+    target_output = 4
+    # target=4 → target >= 5 ist False → switching_on_discharge=False
+    # → normaler diff-Pfad: |4-0|=4 < 5 → False
     assert compute_should_update(output_now, target_output) is False
 
 
@@ -227,6 +231,31 @@ def test_reserve_soc_winter_two_bad_days():
 
 
 # ===========================================================================
+# Zeit- und Hausstunden-Tests
+# ===========================================================================
+
+
+def test_hours_to_target_evening_mode():
+    """now_hour=18, evening_start=16 → Abend-Modus, hours = 22-18 = 4."""
+    assert compute_hours_to_target(now_hour=18.0, evening_start=16.0) == pytest.approx(4.0)
+
+
+def test_house_hours_night_mode():
+    """now_hour=23, evening_start=16 → Nacht-Modus, hours = (24-23)+16 = 17."""
+    assert compute_house_hours(now_hour=23.0, evening_start=16.0) == pytest.approx(17.0)
+
+
+def test_house_hours_day_mode():
+    """now_hour=10, evening_start=16 → Tagmodus, hours = max(16-10,0) = 6."""
+    assert compute_house_hours(now_hour=10.0, evening_start=16.0) == pytest.approx(6.0)
+
+
+def test_house_hours_after_evening_start():
+    """now_hour=18, evening_start=16 → nach evening_start, hours = max(16-18,0) = 0."""
+    assert compute_house_hours(now_hour=18.0, evening_start=16.0) == pytest.approx(0.0)
+
+
+# ===========================================================================
 # Soll-SOC-Tests (31–35, FIX 3)
 # ===========================================================================
 
@@ -238,36 +267,102 @@ def test_soll_soc_fix3_no_division_by_zero():
     mit day_end==8 erreicht würde. Mit now_hour==day_end greift hier
     der Evening-Branch (soll=100 %), kein Absturz.
     """
-    result = compute_soll_soc(now_hour=8.0, day_end=8.0, target_soc=20, start_soc=20)
+    result = compute_soll_soc(
+        now_hour=8.0,
+        day_end=8.0,
+        target_soc=20,
+        soc=20,
+        capacity=9.6,
+        forecast_kwh=0.0,
+        reserve_soc=20,
+    )
     assert result == 100.0
 
 
 def test_soll_soc_night_start_progress_zero():
     """Szenario 32: now_hour=22 → Nacht-Beginn, progress=0, Soll=100 %."""
-    result = compute_soll_soc(now_hour=22.0, day_end=16.0, target_soc=20, start_soc=20)
+    result = compute_soll_soc(
+        now_hour=22.0,
+        day_end=16.0,
+        target_soc=20,
+        soc=20,
+        capacity=9.6,
+        forecast_kwh=0.0,
+        reserve_soc=20,
+    )
     assert result == 100.0
 
 
 def test_soll_soc_night_midway_progress_half():
     """Szenario 33: now_hour=3 → Nacht-Mitte, night_elapsed=5, progress=0.5."""
     target_soc = 20
-    result = compute_soll_soc(now_hour=3.0, day_end=16.0, target_soc=target_soc, start_soc=20)
+    result = compute_soll_soc(
+        now_hour=3.0,
+        day_end=16.0,
+        target_soc=target_soc,
+        soc=20,
+        capacity=9.6,
+        forecast_kwh=0.0,
+        reserve_soc=20,
+    )
     expected = 100 + (target_soc - 100) * 0.5  # = 60
     assert result == pytest.approx(expected)
 
 
 def test_soll_soc_evening_mode():
     """Szenario 34: now_hour=16, day_end=16 → Abend-Modus, Soll=100 %."""
-    result = compute_soll_soc(now_hour=16.0, day_end=16.0, target_soc=20, start_soc=20)
+    result = compute_soll_soc(
+        now_hour=16.0,
+        day_end=16.0,
+        target_soc=20,
+        soc=20,
+        capacity=9.6,
+        forecast_kwh=0.0,
+        reserve_soc=20,
+    )
     assert result == 100.0
 
 
-def test_soll_soc_day_mode_midway():
-    """Szenario 35: now_hour=12, day_end=16 → Tagmodus, progress=(12-8)/8=0.5."""
-    start_soc = 20
-    result = compute_soll_soc(now_hour=12.0, day_end=16.0, target_soc=20, start_soc=start_soc)
-    expected = start_soc + (100 - start_soc) * 0.5  # = 60
-    assert result == pytest.approx(expected)
+def test_soll_soc_day_mode_no_surplus():
+    """Tagmodus, kein Überschuss: forecast=0 → start_soc=soc, progress=0.5 → soll=60."""
+    result = compute_soll_soc(
+        now_hour=12.0,
+        day_end=16.0,
+        target_soc=20,
+        soc=20,
+        capacity=9.6,
+        forecast_kwh=0.0,
+        reserve_soc=20,
+    )
+    assert result == pytest.approx(60.0)
+
+
+def test_soll_soc_day_mode_with_surplus():
+    """Tagmodus mit Überschuss: start_soc wird abgesenkt."""
+    result = compute_soll_soc(
+        now_hour=10.0,
+        day_end=16.0,
+        target_soc=20,
+        soc=90,
+        capacity=9.6,
+        forecast_kwh=5.0,
+        reserve_soc=20,
+    )
+    assert result == pytest.approx(76.875, abs=0.01)
+
+
+def test_soll_soc_day_mode_start_soc_clamped_to_reserve():
+    """Tagmodus: excess_soc so groß dass start_soc auf reserve_soc geklemmt wird."""
+    result = compute_soll_soc(
+        now_hour=8.0,
+        day_end=16.0,
+        target_soc=20,
+        soc=30,
+        capacity=9.6,
+        forecast_kwh=20.0,
+        reserve_soc=20,
+    )
+    assert result == pytest.approx(20.0)
 
 
 # ===========================================================================
@@ -393,7 +488,15 @@ def test_integration_midnight_edge_case():
     assert hours == pytest.approx(8.0)  # 8 - 0 = 8
 
     # Soll-SOC liegt im Nacht-Zweig
-    soll = compute_soll_soc(now_hour=0.0, day_end=16.0, target_soc=20, start_soc=20)
+    soll = compute_soll_soc(
+        now_hour=0.0,
+        day_end=16.0,
+        target_soc=20,
+        soc=20,
+        capacity=9.6,
+        forecast_kwh=0.0,
+        reserve_soc=20,
+    )
     # night_elapsed = 0 + 2 = 2 → progress = 0.2
     expected_soll = 100 + (20 - 100) * 0.2  # = 84
     assert soll == pytest.approx(expected_soll)

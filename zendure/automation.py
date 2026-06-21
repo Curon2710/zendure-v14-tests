@@ -148,14 +148,18 @@ def compute_soll_soc(
     now_hour: float,
     day_end: float,
     target_soc: float,
-    start_soc: float,
+    soc: float,
+    capacity: float,
+    forecast_kwh: float,
+    reserve_soc: float,
 ) -> float:
     """
     Zeitabhängiger SOC-Sollwert (sensor.zendure_soc_sollwert_jetzt).
 
     Nacht  (22–08 Uhr): linearer Rückgang von 100 % auf target_soc.
     Abend  (day_end–22 Uhr): 100 %.
-    Tag    (08–day_end): linearer Anstieg von start_soc auf 100 %.
+    Tag    (08–day_end): linearer Anstieg von dynamisch berechnetem
+                         start_soc auf 100 %.
 
     FIX 3: span wird auf mindestens 0.01 geklemmt, damit keine
            Division durch null auftreten kann, wenn day_end == 8.
@@ -167,6 +171,12 @@ def compute_soll_soc(
     elif now_hour >= day_end:
         return 100.0
     else:
+        house_hours = max(day_end - now_hour, 0)
+        expected_house = house_hours * 0.34
+        free_capacity = ((100 - soc) / 100) * capacity
+        excess = max(forecast_kwh - free_capacity - expected_house, 0)
+        excess_soc = (excess / capacity) * 100
+        start_soc = max(soc - excess_soc, reserve_soc)
         span = max(day_end - 8, 0.01)  # FIX 3: verhindert Division durch null
         progress = min(max((now_hour - 8) / span, 0), 1)
         return start_soc + (100 - start_soc) * progress
@@ -237,6 +247,10 @@ def compute_automation(
 
     Gibt ein Dict mit allen Zwischen- und Endwerten zurück,
     damit Tests jeden Schritt prüfen können.
+
+    Hinweis: ``soll_soc`` wird vom Aufrufer vorbereitet übergeben, weil die
+    vollständige Berechnung zusätzlich den aktiven Forecast ``fc_today_rest``
+    benötigt, der nicht Teil dieses Funktions-Interfaces ist.
     """
     in_deadband = compute_deadband(grid_w)
     regulator_target = compute_regulator_target(grid_w, output_now)
